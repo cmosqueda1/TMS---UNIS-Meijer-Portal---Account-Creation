@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Meijer – Portal Account Creation Bot</title>
+<title>Meijer Portal Account Creation</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
 <style>
@@ -31,6 +31,10 @@ html,body{
 }
 .header{
   margin-bottom:12px;
+}
+.subtitle{
+  color:var(--muted);
+  white-space:pre-line;
 }
 .chat{
   flex:1;
@@ -87,9 +91,9 @@ button:hover{filter:brightness(1.15)}
 
   <div class="header">
     <h2>🤖 Meijer Portal Account Creation</h2>
-    <div class="muted">
-→You MUST provide first name, last name, email  
-→You MUST provide one PO or PRO  
+    <div class="subtitle">
+→ You MUST provide first name, last name, email  
+→ You MUST provide one PO or PRO  
 
 Paste & complete:
 
@@ -139,12 +143,13 @@ send.onclick = async ()=>{
 
     const data = await res.json();
 
-    push(data.reply || "No response", "bot");
+    push(data.reply || "No response from server", "bot");
 
   } catch(err){
-    push("Server error: " + err.message, "bot");
+    push("❌ Server error: " + err.message, "bot");
   }
 };
 </script>
+
 </body>
 </html>

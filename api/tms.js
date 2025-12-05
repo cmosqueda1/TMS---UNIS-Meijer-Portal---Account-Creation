@@ -1,384 +1,217 @@
-/*
-=======================================================
-  TMS MEIJER PORTAL ACCOUNT CREATION BOT
-=======================================================
-
-  ✅ Fully stable crash-proof backend
-  ✅ Dynamic Vendor Location resolution (NO fallback)
-  ✅ Hard stops on any failure
-  ✅ Correct JSON safety for all endpoints
-  ✅ Enforces valid user creation
-  ✅ Prevents duplicate vendor & Meijer location assignment
-
-  REQUIRED ENV:
-  - TMS_USER
-  - TMS_PASS_BASE64
-
-=======================================================
-*/
+// api/tms.js
+// =====================================================
+// TMS Account Creation Bot - Production backend
+// -----------------------------------------------------
+// Fully matches confirmed HAR payload
+// Separates Vendor Location (from PRO lookup)
+// vs Meijer Location (fixed 407987)
+// =====================================================
 
 export default async function handler(req, res) {
   try {
-    if (req.method !== "POST") {
-      return res.status(200).json({ reply: "Invalid request method." });
-    }
+    const { first_name, last_name, email, pro } = req.body || {};
 
-    const input = req.body?.text || "";
-    const user = parseUserInput(input);
-
-    if (!user.first_name || !user.last_name || !user.email) {
-      return res.status(200).json({ reply: missingFieldsMessage() });
-    }
-
-    if (!user.po && !user.pro) {
-      return res.status(200).json({ reply: missingPOPROMessage() });
-    }
-
-    const lookup = user.pro
-      ? await proToVendorLookup(user.pro)
-      : await poToProVendorLookup(user.po);
-
-    if (!lookup || !lookup.location_id) {
-      return res.status(200).json({
-        reply: `❌ Vendor location could not be resolved from PO/PRO.
-User creation cannot continue.
-
----
-Check input:
-
-${missingFieldsForm()}`
+    if (!first_name || !last_name || !email || !pro) {
+      return res.status(400).json({
+        error: "Missing required fields",
+        required: ["first_name", "last_name", "email", "pro"]
       });
     }
 
-    const session = await loginTMS();
-    if (!session) {
-      return res.status(200).json({ reply: "❌ Failed to login to TMS." });
-    }
-
-    const existing = await searchUser(session, user.email);
-
-    if (!existing) {
-      const create = await createUser(session, user);
-
-      if (!create || !create.success || !create.user_id) {
-        return res.status(200).json({
-          reply: `❌ Account creation FAILED
-TMS did not return a valid User ID.`
-        });
-      }
-
-      const loc = await assignLocations(
-        session,
-        create.user_id,
-        user,
-        lookup.location_id
-      );
-
-      return res.status(200).json({
-        reply: buildCreatedReply(user.email, create.password, loc)
-      });
-    }
-
-    const loc = await assignLocations(
-      session,
-      existing.user_id,
-      user,
-      lookup.location_id
-    );
-
-    return res.status(200).json({
-      reply: buildExistingReply(user.email, loc)
-    });
-
-  } catch (err) {
-    console.error("TMS BOT CRASH:", err);
-    return res.status(200).json({
-      reply: `❌ Fatal server exception:\n${err.message || err}`
-    });
-  }
-}
-
-/* ===================================================
-                    UTILITIES
-===================================================*/
-
-async function safeJson(res) {
-  const text = await res.text();
-  try {
-    return JSON.parse(text);
-  } catch {
-    console.error("NON-JSON RESPONSE:", text.slice(0, 500));
-    return { _invalid: true, _raw: text };
-  }
-}
-
-function parseUserInput(txt) {
-  const g = k => {
-    const m = txt.match(new RegExp(`${k}-(.+)`, "i"));
-    return m ? m[1].trim() : "";
-  };
-
-  return {
-    first_name: g("first_name"),
-    last_name: g("last_name"),
-    email: g("email").toLowerCase(),
-    po: g("po"),
-    pro: g("pro")
-  };
-}
-
-function missingFieldsForm() {
-  return `first_name-
-last_name-
-email-
-po-
-pro-`;
-}
-
-function missingFieldsMessage() {
-  return `❌ You must provide all required fields
-
----
-${missingFieldsForm()}`;
-}
-
-function missingPOPROMessage() {
-  return `❌ A PO or PRO number is required to resolve vendor location`;
-}
-
-/* ===================================================
-           PRO / VENDOR LOCATION LOOKUPS
-===================================================*/
-
-/*
-  ✅ Replace these stubs with your real query logic if available.
-  They assume the PRO or PO is valid for now to demonstrate
-  correct structural flow.
-*/
-
-async function proToVendorLookup(pro) {
-  if (!pro) return null;
-  return {
-    pro,
-    location_id: await fakeVendorResolver(pro)
-  };
-}
-
-async function poToProVendorLookup(po) {
-  if (!po) return null;
-  return {
-    po,
-    location_id: await fakeVendorResolver(po)
-  };
-}
-
-/*
-  🔥 Fake resolver is ONLY here to prevent duplicates.
-  Replace with your working TMS or FMS lookup endpoint later.
-*/
-
-async function fakeVendorResolver(key) {
-  /*
-   Generates fake-but-different IDs based on order numbers.
-   Replace with real fk_client_id resolution logic.
-  */
-  const base = "9";
-  const hash = key.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
-  return base + (100000 + (hash % 999999)).toString();
-}
-
-/* ===================================================
-                    TMS API
-===================================================*/
-
-async function loginTMS() {
-  const payload = new URLSearchParams({
-    username: process.env.TMS_USER,
-    password: process.env.TMS_PASS_BASE64,
-    UserID: "null",
-    UserToken: "null",
-    pageName: "/index.html"
-  });
-
-  const r = await fetch(
-    "https://tms.freightapp.com/write/check_login.php",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Requested-With": "XMLHttpRequest"
-      },
-      body: payload
-    }
-  );
-
-  const j = await safeJson(r);
-  if (!j.UserID || !j.UserToken) return null;
-
-  return { UserID: j.UserID, UserToken: j.UserToken };
-}
-
-async function searchUser(session, email) {
-
-  const payload = new URLSearchParams({
-    input_email: email,
-    input_group: "0",
-    UserID: session.UserID,
-    UserToken: session.UserToken,
-    pageName: "dashboardUserManager"
-  });
-
-  const r = await fetch(
-    "https://tms.freightapp.com/write_new/search_group_users.php",
-    { method: "POST", body: payload }
-  );
-
-  const j = await safeJson(r);
-
-  if (j._invalid) return null;
-
-  const arr = Array.isArray(j) ? j : j.users || [];
-  return arr.find(u => (u.user_email || "").toLowerCase() === email);
-}
-
-async function createUser(session, user) {
-
-  const payload = new URLSearchParams({
-    input_user_id: 0,
-    input_username: user.email,
-    input_email: user.email,
-    input_firstname: user.first_name,
-    input_lastname: user.last_name,
-
-    input_group: 1071,
-    input_active: 1,
-    input_is_vendor: 1,
-    input_warehouse_user: 407987,
-    input_timezone: "PST",
-
-    UserID: session.UserID,
-    UserToken: session.UserToken,
-    pageName: "dashboardUserManager"
-  });
-
-  const r = await fetch(
-    "https://tms.freightapp.com/write_new/write_company_user.php",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Requested-With": "XMLHttpRequest"
-      },
-      body: payload
-    }
-  );
-
-  const j = await safeJson(r);
-
-  if (j._invalid || !j.user_id) {
-    console.error("USER CREATE FAILURE:", j._raw || j);
-    return { success: false };
-  }
-
-  return {
-    success: true,
-    user_id: j.user_id,
-    password: j.password || j.temp_password || "(not returned)"
-  };
-}
-
-/* ===================================================
-               LOCATION ASSIGNMENT
-===================================================*/
-
-async function assignLocations(
-  session,
-  user_id,
-  user,
-  vendor_id
-) {
-
-  async function addLocation(loc_id) {
-
-    const payload = new URLSearchParams({
-      input_location_contacts_id: 0,
-      input_fk_user_id: user_id,
-
-      input_location_contacts_name: user.first_name,
-      input_location_contacts_lastname: user.last_name,
-      input_location_contacts_email: user.email,
-      input_location_contacts_type: "CSR",
-
-      input_fk_location_id: loc_id,
-
-      input_location_contacts_status: 1,
-      input_is_user_manager: 1,
-
-      UserID: session.UserID,
-      UserToken: session.UserToken,
-      pageName: "dashboardUserManager"
-    });
-
-    await fetch(
-      "https://tms.freightapp.com/write_new/write_location_contacts_admin.php",
+    // ==================================================
+    // LOGIN
+    // ==================================================
+    const loginResp = await fetch(
+      "https://tms.freightapp.com/write/check_login.php",
       {
         method: "POST",
         headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
           "X-Requested-With": "XMLHttpRequest"
         },
-        body: payload
+        body: new URLSearchParams({
+          username: "cmosqueda",
+          password: "UWF2NjUyODk=",
+          UserID: "null",
+          UserToken: "null",
+          pageName: "/index.html"
+        })
       }
     );
+
+    const loginJSON = await loginResp.json();
+
+    if (!loginJSON?.UserID || !loginJSON?.UserToken) {
+      return res.status(500).json({
+        error: "TMS login failed",
+        response: loginJSON
+      });
+    }
+
+    const USER_ID = loginJSON.UserID;
+    const USER_TOKEN = loginJSON.UserToken;
+
+    // ==================================================
+    // FIND VENDOR LOCATION BY PRO
+    // ==================================================
+    const proResp = await fetch(
+      "https://tms.freightapp.com/write/get_tms_pu_order_pro.php",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          "X-Requested-With": "XMLHttpRequest"
+        },
+        body: new URLSearchParams({
+          pro,
+          UserID: USER_ID,
+          UserToken: USER_TOKEN,
+          pageName: "/dashboard_tms_order.php"
+        })
+      }
+    );
+
+    const proJSON = await proResp.json();
+    const orderId = proJSON?.order?.tms_order_id;
+
+    if (!orderId) {
+      return res.status(500).json({
+        error: "PRO lookup failed",
+        response: proJSON
+      });
+    }
+
+    const detailResp = await fetch(
+      "https://tms.freightapp.com/write/get_load_tms_orderv2.php",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          "X-Requested-With": "XMLHttpRequest"
+        },
+        body: new URLSearchParams({
+          input_order_id: orderId,
+          UserID: USER_ID,
+          UserToken: USER_TOKEN,
+          pageName: `/dashboard_tms_order.php?order_id=${orderId}`
+        })
+      }
+    );
+
+    const detailJSON = await detailResp.json();
+
+    const VENDOR_LOCATION_ID = detailJSON?.order?.fk_client_id;
+
+    if (!VENDOR_LOCATION_ID) {
+      return res.status(500).json({
+        error: "No Vendor Location detected from PRO",
+        response: detailJSON
+      });
+    }
+
+    // ==================================================
+    // CREATE USER
+    // ==================================================
+    const createPayload = new URLSearchParams({
+      input_user_id: "0",
+      input_email: email,
+      input_username: email,
+      input_firstname: first_name,
+      input_lastname: last_name,
+      input_group: "104",
+      input_group_terminals: "undefined",
+      input_mobile: "",
+      input_dob: "",
+      input_doh: "",
+      input_dl_expiry: "",
+      input_license: "undefined",
+      input_license_mm: "undefined",
+      input_license_dd: "undefined",
+      input_license_yy: "undefined",
+      input_warehouse_driver: "undefined",
+      input_rv: "undefined",
+      input_rv_code: "undefined",
+      input_pay_type: "undefined",
+      input_project: "0",
+      input_pay_amount: "undefined",
+      input_active: "1",
+      use_sso_login: "0",
+      use_sso_domain: "",
+      input_safety: "0",
+      input_watch: "0",
+      input_driver: "0",
+      input_tablet: "0",
+      input_gp_code: "",
+      input_ext_code: "",
+      input_bypass: "0",
+      input_maintenance: "0",
+      input_timezone: "PST",
+      input_user_type: "0",
+      input_developer_ftp: "",
+      input_employee: "0",
+      input_warehouse_user: "407987",
+      input_text_notification: "0",
+      input_email_notification: "0",
+      input_app_notification: "0",
+      input_eld_support: "0",
+      input_is_vendor: "0",
+      input_claims_access: "0",
+      input_token_expire: "0",
+      input_multi_login: "0",
+      input_sso_user_name: "",
+      input_terminal_permission: "[]",
+      user_employee_id: "",
+      UserID: USER_ID,
+      UserToken: USER_TOKEN,
+      pageName: "dashboardUserManager"
+    });
+
+    const createResp = await fetch(
+      "https://tms.freightapp.com/write_new/write_company_user.php",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          "X-Requested-With": "XMLHttpRequest"
+        },
+        body: createPayload
+      }
+    );
+
+    let createJSON;
+    try {
+      createJSON = await createResp.json();
+    } catch {
+      const raw = await createResp.text();
+      return res.status(500).json({
+        error: "Server returned non-JSON response",
+        body: raw
+      });
+    }
+
+    if (!createJSON?.user_id) {
+      return res.status(500).json({
+        error: "Account creation FAILED",
+        response: createJSON
+      });
+    }
+
+    // ==================================================
+    // FINAL OUTPUT
+    // ==================================================
+    return res.json({
+      success: true,
+      username: createJSON.user_email,
+      password: createJSON.password,
+      vendor_location_id: VENDOR_LOCATION_ID,
+      meijer_location_id: "407987",
+      user_id: createJSON.user_id
+    });
+
+  } catch (err) {
+    return res.status(500).json({
+      error: "Unhandled exception",
+      details: err.message || err
+    });
   }
-
-  // ✅ DYNAMIC vendor location
-  await addLocation(vendor_id);
-
-  // ✅ HARD Meijer location
-  await addLocation("407987");
-
-  return {
-    vendor: vendor_id,
-    meijer: "407987"
-  };
-}
-
-/* ===================================================
-                OUTPUT BUILDERS
-===================================================*/
-
-function buildCreatedReply(username, password, loc) {
-  return `✅ Account Created → Location contact(s) added.
-
-Vendor Location:
-${loc.vendor}
-
-Meijer Location:
-${loc.meijer}
-
----
-https://ship.unisco.com/v2/index.html#/login
-
-Username:
-${username}
-
-Password:
-${password}`;
-}
-
-function buildExistingReply(username, loc) {
-  return `✅ Account already exists → Location contact(s) updated.
-
-Vendor Location:
-${loc.vendor}
-
-Meijer Location:
-${loc.meijer}
-
----
-https://ship.unisco.com/v2/index.html#/login
-
-Username:
-${username}`;
 }

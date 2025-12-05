@@ -29,9 +29,7 @@ html,body{
   flex-direction:column;
   height:100%;
 }
-.header{
-  margin-bottom:12px;
-}
+.header{margin-bottom:12px}
 .subtitle{
   color:var(--muted);
   white-space:pre-line;
@@ -141,12 +139,20 @@ send.onclick = async ()=>{
       body: JSON.stringify({ text: msg })
     });
 
-    const data = await res.json();
+    const raw = await res.text();
+
+    let data;
+    try{
+      data = JSON.parse(raw);
+    }catch{
+      push("❌ Server returned non-JSON response:\n\n"+raw, "bot");
+      return;
+    }
 
     push(data.reply || "No response from server", "bot");
 
   } catch(err){
-    push("❌ Server error: " + err.message, "bot");
+    push("❌ Client error:\n"+err.message, "bot");
   }
 };
 </script>

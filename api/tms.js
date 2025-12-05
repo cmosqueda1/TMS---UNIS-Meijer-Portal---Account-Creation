@@ -1,190 +1,258 @@
-// =====================================================
-// api/tms.js
-// STABLE VERSION + LOCATION CONTACT ADD LOGIC
-// FIXES ERROR -15 LOGIN ISSUE
-// =====================================================
+// /api/tms.js
+// Meijer TMS Account Creator
+//
+// Flow:
+//  1) Validate payload from front-end
+//  2) (optional) Call E2Open to resolve / validate PRO/PO  [stubbed hook]
+//  3) Create TMS user via write_company_user.php
+//  4) Create location contact via write_location_contacts_admin.php
+//  5) Return summary + temp password
 
-const TMS_LOGIN_URL = "https://tms.freightapp.com/write/check_login.php";
-const TMS_CREATE_USER_URL = "https://tms.freightapp.com/write_new/write_company_user.php";
-const TMS_CONTACT_URL = "https://tms.freightapp.com/write_new/write_location_contacts_admin.php";
-const TMS_PRO_LOOKUP_URL = "https://tms.freightapp.com/write/get_tms_pu_order_pro.php";
-const TMS_ORDER_DETAIL_URL = "https://tms.freightapp.com/write/get_load_tms_orderv2.php";
+const TMS_BASE = "https://tms.freightapp.com";
 
-const {
-  TMS_USERNAME,
-  TMS_PASSWORD_BASE64
-} = process.env;
+const WRITE_USER_URL =
+  `${TMS_BASE}/write_new/write_company_user.php`;
 
-/* =====================================================
-       SAFE POST WRAPPER
-===================================================== */
-async function safePost(url, body) {
+const WRITE_LOCATION_URL =
+  `${TMS_BASE}/write_new/write_location_contacts_admin.php`;
 
-  const r = await fetch(url, {
-    method: "POST",
-    headers:{
-      "Content-Type":"application/x-www-form-urlencoded",
-      "X-Requested-With":"XMLHttpRequest"
-    },
-    body
-  });
+// --- helpers ----------------------------------------------------
 
-  const text = await r.text();
-
-  try { return JSON.parse(text); }
-  catch { return { _invalid:true, raw:text }; }
-
+function sendJson(res, status, data) {
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify(data));
 }
 
-/* =====================================================
-       LOGIN
-===================================================== */
+// optional hook – safe no-op if you haven’t wired E2Open yet
+async function resolvePoWithE2Open({ pro, po }) {
+  // If you have an E2Open endpoint, env it and add the call here.
+  // Kept as a stub so this file DOES NOT break anything if not set.
+  const url = process.env.E2OPEN_URL;
+  if (!url) {
+    return { pro, po, fromE2Open: false };
+  }
 
-async function tmsLogin(){
+  try {
+    const body = { pro, po };
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(body),
+    });
 
-  const payload =
-    `username=${TMS_USERNAME}` +
-    `&password=${TMS_PASSWORD_BASE64}` +
-    `&UserID=null` +
-    `&UserToken=null` +
-    `&pageName=/index.html`;
-
-  return safePost(TMS_LOGIN_URL, payload);
-}
-
-/* =====================================================
-       MAIN HANDLER
-===================================================== */
-
-export default async function handler(req,res){
-
-  try{
-
-    const { first_name, last_name, email, pro } = req.body;
-
-    if(!first_name || !last_name || !email || !pro){
-      return res.json({ error:"Missing required inputs" });
+    if (!resp.ok) {
+      return { pro, po, fromE2Open: false, error: `E2Open HTTP ${resp.status}` };
     }
 
-    /* LOGIN */
-    const login = await tmsLogin();
+    const data = await resp.json().catch(() => ({}));
+    return {
+      pro: data.pro || pro || "",
+      po: data.po || po || "",
+      fromE2Open: true,
+    };
+  } catch (err) {
+    return { pro, po, fromE2Open: false, error: err.message };
+  }
+}
 
-    if(!login?.UserID || !login?.UserToken){
-      return res.json({
-        error:"TMS login failed",
-        debug: login
+// --- main handler -----------------------------------------------
+
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return sendJson(res, 405, { error: "Method not allowed" });
+  }
+
+  const {
+    firstName,
+    lastName,
+    email,
+    pro: rawPro,
+    po: rawPo,
+  } = req.body || {};
+
+  // Basic validation – front-end already does most of this
+  if (!firstName || !lastName || !email || (!rawPro && !rawPo)) {
+    return sendJson(res, 400, {
+      error: "Missing required fields (firstName, lastName, email, and PRO or PO).",
+    });
+  }
+
+  const TMS_USER_ID = process.env.TMS_USER_ID;
+  const TMS_USER_TOKEN = process.env.TMS_USER_TOKEN;
+
+  if (!TMS_USER_ID || !TMS_USER_TOKEN) {
+    return sendJson(res, 500, {
+      error: "TMS credentials are not configured (TMS_USER_ID / TMS_USER_TOKEN).",
+    });
+  }
+
+  // Meijer location / warehouse mapping – default from your HAR, override via env
+  const TMS_WAREHOUSE_LOCATION_ID =
+    process.env.TMS_WAREHOUSE_LOCATION_ID || "407987"; // MEIJER INC C/O INTELLIGENT AUDIT
+
+  // --- Step 1: (optional) resolve via E2Open --------------------
+  const pro = (rawPro || "").trim();
+  const po = (rawPo || "").trim();
+
+  const e2open = await resolvePoWithE2Open({ pro, po });
+
+  // --- Step 2: Create TMS user ---------------------------------
+  try {
+    const form = new URLSearchParams();
+
+    // Core user details
+    form.set("input_user_id", "0");
+    form.set("input_email", email);
+    form.set("input_username", email);
+    form.set("input_firstname", firstName);
+    form.set("input_lastname", lastName);
+
+    // Group / permissions – from working HAR example
+    form.set("input_group", "104"); // SB CUST
+    form.set("input_group_terminals", "undefined");
+
+    // Optional / misc – keep aligned with HAR, even if blank
+    form.set("input_mobile", "");
+    form.set("input_dob", "");
+    form.set("input_doh", "");
+    form.set("input_dl_expiry", "");
+    form.set("input_license", "undefined");
+    form.set("input_license_mm", "undefined");
+    form.set("input_license_dd", "undefined");
+    form.set("input_license_yy", "undefined");
+    form.set("input_warehouse_driver", "undefined");
+    form.set("input_rv", "undefined");
+    form.set("input_rv_code", "undefined");
+    form.set("input_pay_type", "undefined");
+    form.set("input_project", "0");
+    form.set("input_pay_amount", "undefined");
+    form.set("input_active", "1");
+    form.set("use_sso_login", "0");
+    form.set("use_sso_domain", "");
+    form.set("input_safety", "0");
+    form.set("input_watch", "0");
+    form.set("input_driver", "0");
+    form.set("input_tablet", "0");
+
+    // Key: warehouse / location on the user record
+    form.set("input_warehouse_user", TMS_WAREHOUSE_LOCATION_ID);
+
+    form.set("input_gp_code", "");
+    form.set("input_ext_code", "");
+    form.set("input_bypass", "0");
+    form.set("input_maintenance", "0");
+    form.set("input_timezone", "PST");
+    form.set("input_user_type", "0");
+    form.set("input_developer_ftp", "");
+    form.set("input_employee", "0");
+    form.set("input_warehouse_user", TMS_WAREHOUSE_LOCATION_ID);
+    form.set("input_text_notification", "0");
+    form.set("input_email_notification", "0");
+    form.set("input_app_notification", "0");
+    form.set("input_eld_support", "0");
+    form.set("input_is_vendor", "0");
+    form.set("input_claims_access", "0");
+    form.set("input_token_expire", "0");
+    form.set("input_multi_login", "0");
+    form.set("input_sso_user_name", "");
+    form.set("input_terminal_permission", "[]");
+
+    // Auth from env (NO extra login step)
+    form.set("UserID", TMS_USER_ID);
+    form.set("UserToken", TMS_USER_TOKEN);
+    form.set("pageName", "dashboardUserManager");
+
+    const createResp = await fetch(WRITE_USER_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        Accept: "application/json, text/javascript, */*; q=0.01",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      body: form.toString(),
+    });
+
+    const createJson = await createResp.json().catch(() => null);
+
+    if (!createResp.ok || !createJson || !createJson.user_id) {
+      return sendJson(res, 500, {
+        error: "Account creation FAILED in TMS",
+        debug: {
+          status: createResp.status,
+          body: createJson,
+        },
       });
     }
 
-    const session = {
-      UserID: login.UserID,
-      UserToken: login.UserToken
-    };
+    const newUserId = createJson.user_id;
+    const tempPassword = createJson.password || "";
 
-    /* LOOKUP PRO */
-    const proLookup = await safePost(
-      TMS_PRO_LOOKUP_URL,
-      `pro=${pro}&UserID=${session.UserID}&UserToken=${session.UserToken}&pageName=dashboard`
-    );
+    // --- Step 3: Create Location Contact -----------------------
+    const locForm = new URLSearchParams();
 
-    const orderId = proLookup?.order?.tms_order_id;
+    locForm.set("input_location_contacts_id", "0");
+    locForm.set("input_fk_user_id", String(newUserId));
+    locForm.set("input_location_contacts_name", firstName);
+    locForm.set("input_location_contacts_lastname", lastName);
+    locForm.set("input_location_contacts_title", "");
+    locForm.set("input_location_contacts_phone", "");
+    locForm.set("input_location_contacts_fax", "");
+    locForm.set("input_location_contacts_email", ""); // HAR kept this blank
+    locForm.set("input_location_contacts_type", "CSR");
+    locForm.set("input_fk_location_id", TMS_WAREHOUSE_LOCATION_ID);
+    locForm.set("input_contacts_notify_email", "0");
+    locForm.set("input_contacts_notify_phone", "0");
+    locForm.set("input_contacts_notify_text", "0");
+    locForm.set("input_contacts_notify_fax", "0");
+    locForm.set("input_location_contacts_status", "1");
+    locForm.set("input_is_user_manager", "1");
 
-    if(!orderId){
-      return res.json({ error:"Invalid PRO", debug: proLookup });
-    }
+    locForm.set("UserID", TMS_USER_ID);
+    locForm.set("UserToken", TMS_USER_TOKEN);
+    locForm.set("pageName", "dashboardUserManager");
 
-    const order = await safePost(
-      TMS_ORDER_DETAIL_URL,
-      `input_order_id=${orderId}&UserID=${session.UserID}&UserToken=${session.UserToken}&pageName=dashboard`
-    );
-
-    const vendorLocation = order?.order?.fk_client_id;
-
-    if(!vendorLocation){
-      return res.json({ error:"Vendor location not resolved", debug: order });
-    }
-
-    /* CREATE USER */
-    const createUser = await safePost(
-      TMS_CREATE_USER_URL,
-      `input_user_id=0`+
-      `&input_email=${email}`+
-      `&input_username=${email}`+
-      `&input_firstname=${first_name}`+
-      `&input_lastname=${last_name}`+
-      `&input_group=104`+
-      `&input_project=0`+
-      `&input_active=1`+
-      `&use_sso_login=0`+
-      `&input_safety=0&input_watch=0&input_driver=0&input_tablet=0`+
-      `&input_bypass=0&input_maintenance=0`+
-      `&input_timezone=PST`+
-      `&input_user_type=0`+
-      `&input_employee=0`+
-      `&input_warehouse_user=407987`+
-      `&input_text_notification=0&input_email_notification=0&input_app_notification=0`+
-      `&input_eld_support=0&input_is_vendor=0&input_claims_access=0`+
-      `&input_token_expire=0&input_multi_login=0`+
-      `&input_terminal_permission=[]`+
-      `&UserID=${session.UserID}`+
-      `&UserToken=${session.UserToken}`+
-      `&pageName=dashboardUserManager`
-    );
-
-    if(!createUser?.user_id){
-      return res.json({ error:"Account creation failed", debug:createUser });
-    }
-
-    const userId = createUser.user_id;
-
-    /* ADD LOCATION CONTACTS */
-    const addContact = async (locationId)=>
-      safePost(
-        TMS_CONTACT_URL,
-        `input_location_contacts_id=0`+
-        `&input_fk_user_id=${userId}`+
-        `&input_location_contacts_name=${first_name}`+
-        `&input_location_contacts_lastname=${last_name}`+
-        `&input_location_contacts_title=`+
-        `&input_location_contacts_phone=`+
-        `&input_location_contacts_fax=`+
-        `&input_location_contacts_email=`+
-        `&input_location_contacts_type=CSR`+
-        `&input_fk_location_id=${locationId}`+
-        `&input_contacts_notify_email=0`+
-        `&input_contacts_notify_phone=0`+
-        `&input_contacts_notify_text=0`+
-        `&input_contacts_notify_fax=0`+
-        `&input_location_contacts_status=1`+
-        `&input_is_user_manager=1`+
-        `&UserID=${session.UserID}`+
-        `&UserToken=${session.UserToken}`+
-        `&pageName=dashboardUserManager`
-      );
-
-    const vendorContact = await addContact(vendorLocation);
-    const meijerContact = await addContact("407987");
-
-    /* SUCCESS */
-    return res.json({
-      success:true,
-      user_id:userId,
-      username:createUser.user_email,
-      password:createUser.password || "(not returned)",
-      vendor_location:vendorLocation,
-      meijer_location:"407987",
-      contacts:{
-        vendor: vendorContact?.location_contacts_id,
-        meijer: meijerContact?.location_contacts_id
-      }
+    const locResp = await fetch(WRITE_LOCATION_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        Accept: "application/json, text/javascript, */*; q=0.01",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      body: locForm.toString(),
     });
 
-  }
-  catch(err){
-    return res.json({
-      error:"Fatal backend exception",
-      detail:err.message || err
+    const locJson = await locResp.json().catch(() => null);
+
+    if (!locResp.ok || !locJson || !locJson.location_contacts_id) {
+      return sendJson(res, 500, {
+        error: "Location contact creation FAILED",
+        tmsUserId: newUserId,
+        debug: {
+          status: locResp.status,
+          body: locJson,
+        },
+      });
+    }
+
+    // --- Final response back to UI -----------------------------
+    return sendJson(res, 200, {
+      success: true,
+      message: "TMS user and location contact created.",
+      tmsUserId: newUserId,
+      tempPassword,
+      locationContactId: locJson.location_contacts_id,
+      meijerLocationId: TMS_WAREHOUSE_LOCATION_ID,
+      e2open: e2open,
+    });
+  } catch (err) {
+    console.error("TMS account creator error:", err);
+    return sendJson(res, 500, {
+      error: "Unexpected server error",
+      details: err.message,
     });
   }
-
 }

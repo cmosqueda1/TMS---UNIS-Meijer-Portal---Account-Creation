@@ -1,103 +1,106 @@
-import fetch from "node-fetch";
-
 /*
- REQUIRED ENV VARIABLES
- -----------------------
- TMS_USER=<username>
- TMS_PASS_BASE64=<base64 password>
+  =============================================
+  CRASH-PROOF MEIJER TMS BOT API
+  =============================================
+
+  REQUIRED ENV VARS:
+
+  TMS_USER=<username>
+  TMS_PASS_BASE64=<base64_password>
+
+  Node 18+ (Vercel native fetch)
 */
 
-const TMS_USER = process.env.TMS_USER;
-const TMS_PASS = process.env.TMS_PASS_BASE64;
-
-// =====================================================
-// MAIN SERVERLESS HANDLER
-// =====================================================
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    res.status(200).json({ reply: "Invalid request method." });
-    return;
-  }
-
   try {
-    const input = req.body?.text || "";
-    const user = parseUserInput(input);
 
-    if (!user.first_name || !user.last_name || !user.email)
-      return res.status(200).json({ reply: missingFieldsMessage() });
-
-    if (!user.po && !user.pro)
-      return res.status(200).json({ reply: noPoProMessage() });
-
-    const pros = user.pro || await poToProLookup(user.po);
-
-    if (!pros)
-      return res.status(200).json({
-        reply:`The PO you provided - ${user.po} could not be found\n\n---\n\n${missingFieldsForm()}`
-      });
-
-    const session = await loginTMS();
-    if (!session)
-      return res.status(200).json({ reply: "❌ Unable to login to TMS." });
-
-    const foundUser = await searchUser(session, user.email);
-
-    if (foundUser) {
-      const loc = await addLocations(session, foundUser.user_id, user, pros.location_id || "407987");
-      return res.status(200).json({ reply: buildExistingReply(user.email, loc) });
+    // Body safety guard
+    let inputText = "";
+    if (req.body && typeof req.body === "object") {
+      inputText = req.body.text || "";
     }
 
-    const created = await createUser(session, user);
+    const user = parseUserInput(inputText);
 
-    if (!created.success)
-      return res.status(200).json({ reply: created.message });
+    if (!user.first_name || !user.last_name || !user.email) {
+      return res.status(200).json({ reply: missingFieldsMessage() });
+    }
 
-    const loc = await addLocations(session, created.user_id, user, pros.location_id || "407987");
+    if (!user.po && !user.pro) {
+      return res.status(200).json({ reply: noPoProMessage() });
+    }
+
+    // PO→PRO lookup hook (stub)
+    const proLookup = user.pro ? { location_id: "" } : await poToProLookup(user.po);
+    if (!proLookup) {
+      return res.status(200).json({
+        reply: `The PO you provided - ${user.po} could not be found\n\n---\n\n${missingFieldsForm()}`
+      });
+    }
+
+    const session = await loginTMS();
+    if (!session) {
+      return res.status(200).json({ reply: "❌ Unable to authenticate to TMS" });
+    }
+
+    const existingUser = await searchUser(session, user.email);
+
+    if (!existingUser) {
+      const created = await createUser(session, user);
+      if (!created.success) return res.status(200).json({ reply: created.message });
+
+      const loc = await addLocations(session, created.user_id, user, proLookup.location_id || "407987");
+
+      return res.status(200).json({
+        reply: buildCreatedReply(user.email, created.password, loc)
+      });
+    }
+
+    const loc = await addLocations(session, existingUser.user_id, user, proLookup.location_id || "407987");
 
     return res.status(200).json({
-      reply: buildCreatedReply(user.email, created.password, loc)
+      reply: buildExistingReply(user.email, loc)
     });
 
   } catch (err) {
-    console.error("HANDLER FAILURE:", err);
+
+    console.error("FATAL API ERROR:", err);
+
+    // ABSOLUTE GUARANTEE: JSON ALWAYS RETURNED
     return res.status(200).json({
-      reply: "❌ Server-side failure\n\n" + (err.message || String(err))
+      reply: "❌ Server-side crash intercepted:\n\n" + (err.message || String(err))
     });
   }
 }
 
-// =====================================================
-// SAFE JSON PARSER — STOPS “Unexpected token” CRASHES
-// =====================================================
-async function safeJson(res){
-  const text = await res.text();
-  try{
+/* =================================================
+                UTILITIES
+==================================================*/
+
+async function safeJson(response) {
+  const text = await response.text();
+  try {
     return JSON.parse(text);
-  }catch{
-    console.error("NON-JSON RESPONSE:\n", text.slice(0,500));
-    return { _invalid:true, _raw:text };
+  } catch {
+    console.error("NON JSON RESPONSE:", text.slice(0,400));
+    return { _invalid:true,_raw:text };
   }
 }
 
-// =====================================================
-// INPUT PARSER
-// =====================================================
 function parseUserInput(txt){
-  const get = k => {
-    const m = txt.match(new RegExp(`${k}-(.+)`, "i"));
-    return m ? m[1].trim() : "";
-  };
-
+  const grab=k=>{
+    const m=txt.match(new RegExp(k+"-(.+)","i"));
+    return m?m[1].trim():"";
+  }
   return {
-    first_name: get("first_name"),
-    last_name:  get("last_name"),
-    email:      get("email").toLowerCase(),
-    po:         get("po"),
-    pro:        get("pro")
+    first_name: grab("first_name"),
+    last_name: grab("last_name"),
+    email: grab("email").toLowerCase(),
+    po: grab("po"),
+    pro: grab("pro")
   };
 }
 
-// =====================================================
 function missingFieldsForm(){
   return `first_name-
 last_name-
@@ -105,59 +108,45 @@ email-
 po-
 pro-`;
 }
-
 function missingFieldsMessage(){
-  return `You must provide a first name, last name, and email\n\n---\n\n${missingFieldsForm()}`;
+  return `You must provide first name, last name, and email\n\n---\n\n${missingFieldsForm()}`;
 }
-
 function noPoProMessage(){
-  return `❌ No PO or PRO provided.\n\nYou may need to add vendor locations manually.`;
+  return `❌ No PO or PRO provided.\n\nAdd vendor locations manually if needed.`;
 }
 
-// =====================================================
-// PO → PRO LOOKUP (Stub placeholder)
-// =====================================================
-async function poToProLookup(po){
-  if(!po) return null;
-  return {
-    location_id:""
-  };
-}
+async function poToProLookup(){ return { location_id:"" }; }
 
-// =====================================================
-// TMS AUTH
-// =====================================================
-async function loginTMS(){
+/* =================================================
+                TMS FUNCTIONS
+==================================================*/
+
+async function loginTMS() {
+
   const payload = new URLSearchParams({
-    username:TMS_USER,
-    password:TMS_PASS,
+    username: process.env.TMS_USER,
+    password: process.env.TMS_PASS_BASE64,
     UserID:"null",
     UserToken:"null",
     pageName:"/index.html"
   });
 
-  const r = await fetch("https://tms.freightapp.com/write/check_login.php",{
-    method:"POST",
-    headers:{
-      "Content-Type":"application/x-www-form-urlencoded",
-      "X-Requested-With":"XMLHttpRequest"
-    },
-    body:payload
-  });
+  const r = await fetch(
+    "https://tms.freightapp.com/write/check_login.php",
+    {
+      method:"POST",
+      headers:{ "Content-Type":"application/x-www-form-urlencoded","X-Requested-With":"XMLHttpRequest"},
+      body:payload
+    }
+  );
 
   const j = await safeJson(r);
 
-  if(!j.UserID || !j.UserToken) return null;
+  if (!j.UserID || !j.UserToken) return null;
 
-  return {
-    UserID:j.UserID,
-    UserToken:j.UserToken
-  };
+  return { UserID:j.UserID, UserToken:j.UserToken };
 }
 
-// =====================================================
-// SEARCH EXISTING USER
-// =====================================================
 async function searchUser(session,email){
 
   const payload = new URLSearchParams({
@@ -174,16 +163,11 @@ async function searchUser(session,email){
   });
 
   const j = await safeJson(r);
+  const list = Array.isArray(j)?j:(j.users||[]);
 
-  if(j._invalid) return null;
-
-  const users = Array.isArray(j) ? j : (j.users || []);
-  return users.find(u => (u.user_email||"").toLowerCase() === email) || null;
+  return list.find(u => (u.user_email||"").toLowerCase()===email) || null;
 }
 
-// =====================================================
-// CREATE USER
-// =====================================================
 async function createUser(session,user){
 
   const payload = new URLSearchParams({
@@ -204,33 +188,24 @@ async function createUser(session,user){
 
   const r = await fetch("https://tms.freightapp.com/write_new/write_company_user.php",{
     method:"POST",
-    headers:{
-      "Content-Type":"application/x-www-form-urlencoded",
-      "X-Requested-With":"XMLHttpRequest"
-    },
+    headers:{ "Content-Type":"application/x-www-form-urlencoded","X-Requested-With":"XMLHttpRequest"},
     body:payload
   });
 
   const j = await safeJson(r);
-
-  if(j._invalid){
-    return { success:false, message:"❌ Invalid response from TMS during user creation." };
-  }
+  if(j._invalid) return { success:false, message:"❌ TMS creation returned invalid response" };
 
   return {
     success:true,
     user_id:j.user_id,
-    password:j.password || j.temp_password || "(not returned)"
+    password:j.password||j.temp_password||"(not returned)"
   };
 }
 
-// =====================================================
-// ASSIGN LOCATIONS
-// =====================================================
 async function addLocations(session,user_id,user,loc){
 
   async function add(id){
-    const payload = new URLSearchParams({
+    const payload=new URLSearchParams({
       input_location_contacts_id:0,
       input_fk_user_id:user_id,
       input_location_contacts_name:user.first_name,
@@ -245,39 +220,29 @@ async function addLocations(session,user_id,user,loc){
       pageName:"dashboardUserManager"
     });
 
-    await fetch("https://tms.freightapp.com/write_new/write_location_contacts_admin.php",{
-      method:"POST",
-      headers:{
-        "Content-Type":"application/x-www-form-urlencoded",
-        "X-Requested-With":"XMLHttpRequest"
-      },
-      body:payload
-    });
+    await fetch("https://tms.freightapp.com/write_new/write_location_contacts_admin.php",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded","X-Requested-With":"XMLHttpRequest"},body:payload});
   }
 
-  await add(loc || "407987");  // Vendor
-  await add("407987");         // Meijer
+  await add(loc||"407987");
+  await add("407987");
 
-  return {
-    dynamic: loc || "407987",
-    meijer: "407987"
-  };
+  return { dynamic:loc||"407987", meijer:"407987" };
 }
 
-// =====================================================
-// OUTPUT TEXT BUILDERS
-// =====================================================
+/* =================================================
+                OUTPUT TEMPLATES
+==================================================*/
+
 function buildCreatedReply(username,password,loc){
   return `✅ Account Created → Location contact(s) added.
 
-Vendor Location ID:
+Vendor Location:
 ${loc.dynamic}
 
-Meijer Location ID:
+Meijer Location:
 ${loc.meijer}
 
 ---
-
 https://ship.unisco.com/v2/index.html#/login
 
 Username:
@@ -288,16 +253,15 @@ ${password}`;
 }
 
 function buildExistingReply(username,loc){
-  return `✅ Account already exists → Location contact(s) added.
+  return `✅ Account Already Exists → Locations updated.
 
-Vendor Location ID:
+Vendor Location:
 ${loc.dynamic}
 
-Meijer Location ID:
+Meijer Location:
 ${loc.meijer}
 
 ---
-
 https://ship.unisco.com/v2/index.html#/login
 
 Username:

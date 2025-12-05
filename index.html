@@ -3,244 +3,271 @@
 <head>
 <meta charset="UTF-8" />
 <title>Meijer TMS Account Creator</title>
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
 <style>
 :root{
-  --bg:#050b18;
-  --panel:#0f172a;
+  --bg:#070b16;
+  --card:#0f172a;
   --border:#1e293b;
-  --accent:#4c7cff;
-  --accent2:#2dd4bf;
-  --text:#e7eeff;
+  --text:#e5e7eb;
   --muted:#9ca3af;
-  --error:#ef4444;
-  --success:#22c55e;
+  --accent:#38bdf8;
+  --accent2:#2dd4bf;
+  --danger:#ef4444;
+  --ok:#10b981;
 }
-html,body{
+
+*{box-sizing:border-box}
+
+body{
   margin:0;
-  min-height:100vh;
-  background:radial-gradient(circle at 15% -15%, #1f2e5f 0%, transparent 60%), var(--bg);
+  background:radial-gradient(1400px 900px at 20% -10%, #111827 0%, transparent 60%),var(--bg);
   color:var(--text);
-  font-family:system-ui,Segoe UI,Arial,sans-serif;
+  font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;
 }
+
 .wrapper{
-  max-width:820px;
-  margin:auto;
-  padding:40px 16px;
+  min-height:100svh;
+  display:flex;
+  justify-content:center;
+  align-items:flex-start;
+  padding:32px;
 }
+
 .card{
-  background:var(--panel);
-  border-radius:20px;
-  padding:28px;
+  width:100%;
+  max-width:780px;
+  background:linear-gradient(145deg,#0b1224,#0f172a);
   border:1px solid var(--border);
-  box-shadow:0 18px 45px rgba(0,0,0,.5);
+  border-radius:20px;
+  padding:28px 28px 24px;
+  box-shadow:0 20px 50px rgba(0,0,0,.55);
 }
+
 h1{
-  margin:0 0 6px;
+  margin:.1em 0;
+  font-size:28px;
   background:linear-gradient(90deg,var(--accent),var(--accent2));
   -webkit-background-clip:text;
   -webkit-text-fill-color:transparent;
 }
-.subtitle{
+
+.sub{
   color:var(--muted);
-  margin-bottom:16px;
-  font-size:.95rem;
+  margin:4px 0 18px;
 }
-.notice{
-  border:1px dashed var(--border);
+
+.rules{
+  border:1px dashed #1f2937;
+  background:#091126;
   border-radius:12px;
-  padding:12px;
-  margin-bottom:18px;
+  padding:12px 14px;
   color:#cbd5f5;
-  background:rgba(15,23,42,.4);
+  margin-bottom:18px;
 }
+
 .grid{
   display:grid;
+  gap:14px;
   grid-template-columns:1fr 1fr;
-  gap:16px;
 }
-@media(max-width:650px){
-  .grid{ grid-template-columns:1fr; }
-}
+
 .field{
   display:flex;
   flex-direction:column;
 }
+
 label{
-  font-size:.85rem;
-  color:var(--muted);
-  margin-bottom:6px;
+  margin-bottom:5px;
+  font-size:13px;
+  color:#bcd3ff;
 }
+
 input{
-  padding:12px 14px;
-  background:#061026;
-  border-radius:10px;
-  border:1px solid var(--border);
+  background:#020617;
   color:var(--text);
-  font-size:15px;
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:11px 12px;
+  font-size:14px;
 }
-input::placeholder{
-  color:#64748b;
-}
+
 input:focus{
   outline:none;
   border-color:var(--accent);
 }
+
+.full{ grid-column:1/3; }
+
 button{
-  margin-top:20px;
+  grid-column:1/3;
+  margin-top:10px;
+  border:none;
+  border-radius:12px;
   padding:14px;
-  width:100%;
-  border-radius:14px;
   font-size:16px;
   font-weight:600;
-  border:none;
-  background:linear-gradient(135deg,var(--accent),var(--accent2));
-  cursor:pointer;
+  background:linear-gradient(90deg,#4f46e5,var(--accent2));
   color:#fff;
+  cursor:pointer;
 }
+
 button:hover{
-  transform:scale(1.01);
+  filter:brightness(1.05);
 }
-.result{
-  margin-top:22px;
+
+#result{
+  margin-top:14px;
+  border-radius:12px;
+  padding:14px;
+  font-family:monospace;
   background:#020617;
   border:1px solid var(--border);
-  border-radius:14px;
-  padding:16px;
-  min-height:140px;
+  color:#cbd5f5;
+  min-height:90px;
   white-space:pre-wrap;
-  font-family:ui-monospace,Consolas,monospace;
 }
-.success{ border-color:var(--success); }
-.error{ border-color:var(--error); }
+
+.error{
+  border-color:var(--danger);
+  color:#fecaca;
+}
+
+.success{
+  border-color:var(--ok);
+  color:#bbf7d0;
+}
 
 .footer{
   text-align:center;
-  color:var(--muted);
   margin-top:10px;
-  font-size:.8rem;
+  color:var(--muted);
+  font-size:12px;
 }
 </style>
 </head>
-
 <body>
 
 <div class="wrapper">
 <div class="card">
 
 <h1>Meijer TMS Account Creator</h1>
-<div class="subtitle">Create a TMS portal user using PO or PRO mapping</div>
+<div class="sub">
+Create a TMS portal user using PO or PRO mapping
+</div>
 
-<div class="notice">
-<b>You MUST provide:</b><br>
+<div class="rules">
+<strong>You MUST provide:</strong><br>
 • First Name<br>
 • Last Name<br>
 • Email<br>
-• <b>ONE</b> PO or PRO (either works)
+• ONE PO or PRO (either works)
 </div>
 
 <div class="grid">
   <div class="field">
     <label>First Name</label>
-    <input id="first" placeholder="Chelsea">
+    <input id="firstName" />
   </div>
+
   <div class="field">
     <label>Last Name</label>
-    <input id="last" placeholder="McCormick">
+    <input id="lastName" />
   </div>
+
   <div class="field">
     <label>Email</label>
-    <input id="email" placeholder="wirouting@irisusainc.com">
+    <input id="email" />
   </div>
+
   <div class="field">
     <label>PRO #</label>
-    <input id="pro" placeholder="61805217">
+    <input id="pro" />
   </div>
-  <div class="field">
+
+  <div class="field full">
     <label>PO # (optional instead of PRO)</label>
-    <input id="po" placeholder="21855674">
+    <input id="po" />
   </div>
+
+  <button onclick="submitForm()">Create Account</button>
 </div>
 
-<button onclick="submit()">Create Account</button>
-
-<div id="output" class="result">Awaiting submission...</div>
+<div id="result">Awaiting submission…</div>
 
 <div class="footer">
-Uses secure direct TMS API connection — no stored credentials
+  Uses secure direct TMS API connection — no stored credentials
 </div>
 
 </div>
 </div>
 
 <script>
-async function submit(){
+async function submitForm(){
 
-  const data={
-    first_name:first.value.trim(),
-    last_name:last.value.trim(),
-    email:email.value.trim(),
-    pro:pro.value.trim(),
-    po:po.value.trim()
+  const result = document.getElementById("result");
+
+  result.className="";
+  result.textContent="Submitting…";
+
+  const payload = {
+    firstName: document.getElementById("firstName").value.trim(),
+    lastName: document.getElementById("lastName").value.trim(),
+    email: document.getElementById("email").value.trim(),
+    pro: document.getElementById("pro").value.trim(),
+    po: document.getElementById("po").value.trim()
   };
 
-  const out=document.getElementById("output");
-  out.className="result";
-  out.textContent="⏳ Processing...";
-
-  if(!data.first_name || !data.last_name || !data.email){
-    out.className="result error";
-    out.textContent="❌ First name, last name, and email are required.";
-    return;
-  }
-
-  if(!data.pro && !data.po){
-    out.className="result error";
-    out.textContent="❌ You must supply a PO or PRO number.";
-    return;
-  }
-
   try{
-    const r=await fetch("/api/tms",{
+    const res = await fetch("/api/tms",{
       method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify(data)
+      headers:{
+        "Content-Type":"application/json"
+      },
+      body:JSON.stringify(payload)
     });
 
-    const j=await r.json();
+    const data = await res.json();
 
-    if(j.error){
-      out.className="result error";
-      out.textContent=`❌ ${j.error}${j.body ? "\n"+j.body : ""}`;
-      return;
-    }
-
-    out.className="result success";
-    out.textContent=
-`✅ ACCOUNT CREATED & LOCATIONS ADDED
+    if(data.success){
+      result.className="success";
+      result.textContent =
+`✅ ACCOUNT CREATED
 
 USERNAME:
-${j.username}
+${payload.email}
 
 PASSWORD:
-${j.password}
-
-VENDOR LOCATION:
-${j.vendor_location_id}
-
-MEIJER LOCATION:
-${j.meijer_location_id}
+${data.tempPassword || "(not returned)"}
 
 USER ID:
-${j.user_id}
+${data.tmsUserId}
 
-LOGIN:
-https://ship.unisco.com/v2/index.html#/login`;
+MEIJER LOCATION:
+${data.meijerLocationId}
 
-  }catch(err){
-    out.className="result error";
-    out.textContent="❌ Network Error: "+err.message;
+LOCATION CONTACT ID:
+${data.locationContactId}
+
+---
+
+E2Open:
+${JSON.stringify(data.e2open,null,2)}
+`;
+    } else {
+      result.className="error";
+      result.textContent =
+`❌ ${data.error || "Account creation failed"}
+
+DEBUG:
+${JSON.stringify(data.debug || data.details || data, null, 2)}
+`;
+    }
+  }
+  catch(err){
+    result.className="error";
+    result.textContent = "❌ Client error\n\n" + err.message;
   }
 
 }
